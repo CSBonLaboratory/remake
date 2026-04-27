@@ -252,6 +252,7 @@ static int print_usage_flag = 0;
               "preread"   - set to enter debugger before reading makefile(s)
               "preaction" - set to enter debugger before performing any
                             actions(s)
+              "pedantic"  - set to enter in every variable definition and every conditional structure
               "full"     - "enter" + "error" + "fatal"
 */
 static stringlist_t* debugger_opts = NULL;
@@ -1460,6 +1461,12 @@ main (int argc, const char **argv, char **envp)
         if (0 == strcmp(*p, "preread")) {
           b_debugger_preread  = true;
           db_level           |= DB_READ_MAKEFILES;
+        }
+
+        if(0 == strcmp(*p, "pedantic")){
+          b_debugger_pedantic = true;
+          init_pedantic();
+          db_level = DB_ALL;
         }
 
         if (0 == strcmp(*p, "goal")) {

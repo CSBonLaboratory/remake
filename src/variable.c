@@ -24,6 +24,7 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 #include "commands.h"
 #include "variable.h"
 #include "rule.h"
+#include "globals.h"
 #ifdef WINDOWS32
 #include "pathstuff.h"
 #endif
@@ -1652,6 +1653,13 @@ assign_variable_definition (struct variable *v, const char *line)
   if (!parse_variable_definition (line, v))
     return NULL;
 
+  if(b_debugger_pedantic)
+  {
+    /* record the whole assignment as an expression, from now on we go through the left side of it */
+    struct expression* current_assignment = init_expr(&root_expr_tree, line);
+
+    push_dbg_expr(current_assignment);
+  }
   /* Expand the name, so "$(foo)bar = baz" works.  */
   name = alloca (v->length + 1);
   memcpy (name, v->name, v->length);

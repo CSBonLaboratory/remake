@@ -1,5 +1,6 @@
 #include "types.h"
 #include "globals.h"
+#include <string.h>
 
 int env_overrides = 0;
 
@@ -122,6 +123,9 @@ unsigned int debugger_enabled;
 /*! If true, enter the debugger before reading any makefiles. */
 bool b_debugger_preread = false;
 
+/* If true, enter the debugger at every variable assignment, variable definition and conditional structure*/
+bool b_debugger_pedantic = false;
+
 /* This character introduces a command: it's the first char on the line.  */
 char cmd_prefix = '\t';
 
@@ -146,3 +150,95 @@ struct variable shell_var;
 /* The filename and pointer to line number of the
    makefile currently being read in.  */
 const gmk_floc *reading_file = 0;
+
+struct expression_list* step_dbg_expr_stack = NULL;
+struct expression root_expr_tree;
+
+struct expression_list* init_expr_list(struct expression* e){
+   
+   struct expression_list* l = (struct expression_list*)malloc(sizeof(struct expression_list));
+   struct expression_node* head = (struct expression_node*)malloc(sizeof(struct expression_node));
+
+   l->first = head;
+   l->first->prev = NULL;
+   l->first->next = NULL;
+   l->first->expr = e;
+   l->last = l->first;
+}
+struct expression* init_expr(struct expression* parent, char* body){
+
+   struct expression* e = (struct expression*)malloc(sizeof(struct expression));
+   e->body = strdup(body);
+   e->body_len = strlen(body);
+   e->int_peda_value = NULL;
+   e->int_peda_len = 0;
+   e->children = NULL;
+   e->parent = parent;
+
+   if(parent != NULL){
+      if(parent->children == NULL)
+         parent->children = init_expr_list(e);
+      else
+         push_expr(parent->children, e);
+   }
+
+   return e;
+}
+void init_pedantic(){
+
+   step_dbg_expr_stack = init_expr_list((struct expression*)NULL);
+
+   root_expr_tree.children = NULL;
+   root_expr_tree.body = NULL;
+   root_expr_tree.parent = NULL;
+}
+
+void push_expr(struct expression_list* ls, struct expression* expr){
+
+   struct expression_node* new = (struct expression_node*)malloc(sizeof(struct expression_node));
+   new->expr = expr;
+   new->next = NULL;
+   new->prev = ls->last;
+
+   // link last node with the new node
+   ls->last->next = new;
+
+   // cache the new node as the last in the list
+   ls->last = new;
+}
+
+
+void pop_expr(struct expression_list* ls){
+
+   struct expression_node* old = ls->last;
+   ls->last = old->prev;
+   ls->last->next = NULL;
+   
+   // do not free the expression pointer since it is also shared in the root_expr_tree
+   // this function just pops the node from the stack
+   free(old);
+}
+
+struct expression* peek_expr(){
+
+   return step_dbg_expr_stack->last->expr;
+}
+
+void build_pedantic_value(struct expression* expr, char* substr, size_t substr_len){
+
+   if(substr_len == 0)
+      substr_len = strlen(substr);
+
+   if(expr->int_peda_value == NULL){
+
+      expr->int_peda_value = (char*)malloc(substr_len + 1);
+      expr->int_peda_value[0] = '\0';
+      expr->int_peda_len = substr_len;
+   }
+   else{
+      
+      expr->int_peda_value = (char*)realloc((void*)expr->int_peda_value, expr->int_peda_len + substr_len + 1);
+      expr->int_peda_len += substr_len;
+   }
+   strncat(expr->int_peda_value, substr, substr_len);
+}

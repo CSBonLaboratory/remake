@@ -23,6 +23,7 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 #include "commands.h"
 #include "variable.h"
 #include "rule.h"
+#include "globals.h"
 
 /* Initially, any errors reported when expanding strings will be reported
    against the file where the error appears.  */
@@ -171,7 +172,27 @@ reference_variable (char *o, const char *name, size_t length)
   if (v == 0 || (*v->value == '\0' && !v->append))
     return o;
 
-  value = (v->recursive ? recursively_expand (v) : v->value);
+  if(v->recursive){
+    /* if pedantic mode activated, the recursively_expand() will go to a variable_expand_string() that will mean a new node in DFS traversal*/
+    value = recursively_expand(v);
+  }
+  else{
+    if(b_debugger_pedantic){
+
+      char* dbg_value = strdup(v->value);
+
+      /* Link this simple reference with the current expr */
+      struct expression* simple_ref_leaf = init_expr(peek_expr(), dbg_value);
+      
+      /* Intermediare pedantic value is the same is the final value */
+      build_pedantic_value(simple_ref_leaf, dbg_value, 0);
+      
+      /* We dont push the reference variable in the stack since its a leaf node, nothing to visit further */
+    }
+
+    value = v->value;
+  }
+  
 
   o = variable_buffer_output (o, value, strlen (value));
 
@@ -215,7 +236,13 @@ variable_expand_string (char *line, const char *string, size_t length)
      for example).  Also having a nil-terminated string is handy.  */
   save = length == SIZE_MAX ? xstrdup (string) : xstrndup (string, length);
   p = save;
+  
+  if(b_debugger_pedantic){
+    char* dbg_name = strdup(string);
 
+    /* create a new expression and link it with the current one, much like discovering a new neighbor during DFS traversal*/
+    push_dbg_expr(init_expr(peek_expr(), dbg_name));
+  }
   while (1)
     {
       /* Copy all following uninteresting chars all at once to the
@@ -223,8 +250,13 @@ variable_expand_string (char *line, const char *string, size_t length)
          at the next $ or the end of the input.  */
 
       p1 = strchr (p, '$');
+      
+      size_t normal_chars_substr_len = p1 != 0 ? (size_t) (p1 - p) : strlen (p) + 1;
+      
+      if(b_debugger_pedantic)
+        build_pedantic_value(peek_expr(), p, normal_chars_substr_len);
 
-      o = variable_buffer_output (o, p, p1 != 0 ? (size_t) (p1 - p) : strlen (p) + 1);
+      o = variable_buffer_output (o, p, normal_chars_substr_len);
 
       if (p1 == 0)
         break;
@@ -238,6 +270,8 @@ variable_expand_string (char *line, const char *string, size_t length)
         case '\0':
           /* $$ or $ at the end of the string means output one $ to the
              variable output buffer.  */
+          if(b_debugger_pedantic)
+            build_pedantic_value(peek_expr(), p1, 1);
           o = variable_buffer_output (o, p1, 1);
           break;
 
@@ -290,6 +324,26 @@ variable_expand_string (char *line, const char *string, size_t length)
                     abeg = expand_argument (beg, p); /* Expand the name.  */
                     beg = abeg;
                     end = strchr (beg, '\0');
+                    
+                    if(b_debugger_pedantic){
+
+                      /* Append the expanded result of the string between {}/() as intermediary pedantic value */
+                      /* The final result after applying the reference ${}/$() is added to the variable_buffer instead*/
+                      char open_substr[3];
+                      open_substr[0] = '$';
+                      open_substr[1] = openparen;
+                      open_substr[2] = '\0';
+                  
+                      char close_substr[2];
+                      close_substr[0] = closeparen;
+                      close_substr[1] = '\0';
+
+                      struct expression* curr_expr = peek_expr();
+
+                      build_pedantic_value(curr_expr, open_substr, 2);
+                      build_pedantic_value(curr_expr, beg, end - beg);
+                      build_pedantic_value(curr_expr, close_substr, 1);
+                    }
                   }
               }
             else
@@ -378,7 +432,6 @@ variable_expand_string (char *line, const char *string, size_t length)
               /* This is an ordinary variable reference.
                  Look up the value of the variable.  */
                 o = reference_variable (o, beg, end - beg);
-
             free (abeg);
           }
           break;
@@ -403,6 +456,10 @@ variable_expand_string (char *line, const char *string, size_t length)
   free (save);
 
   variable_buffer_output (o, "", 1);
+
+  if(b_debugger_pedantic)
+    pop_dbg_expr();
+
   return (variable_buffer + line_offset);
 }
 
