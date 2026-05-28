@@ -1467,6 +1467,9 @@ main (int argc, const char **argv, char **envp)
           b_debugger_pedantic = true;
           init_pedantic();
           db_level = DB_ALL;
+          i_debugger_stepping  =  1;
+          i_debugger_nexting   =  0;
+          debugger_enabled     =  1;
         }
 
         if (0 == strcmp(*p, "goal")) {

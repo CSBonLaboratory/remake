@@ -23,6 +23,7 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 #include "commands.h"
 #include "variable.h"
 #include "rule.h"
+#include "pedantic.h"
 #include "globals.h"
 
 /* Initially, any errors reported when expanding strings will be reported
@@ -172,27 +173,44 @@ reference_variable (char *o, const char *name, size_t length)
   if (v == 0 || (*v->value == '\0' && !v->append))
     return o;
 
+  struct expression* p = peek_dbg_expr();
+
   if(v->recursive){
     /* if pedantic mode activated, the recursively_expand() will go to a variable_expand_string() that will mean a new node in DFS traversal*/
     value = recursively_expand(v);
   }
   else{
-    if(b_debugger_pedantic){
+    if(makefile_eval_peda){
 
       char* dbg_value = strdup(v->value);
 
       /* Link this simple reference with the current expr */
-      struct expression* simple_ref_leaf = init_expr(peek_expr(), dbg_value);
       
-      /* Intermediare pedantic value is the same is the final value */
-      build_pedantic_value(simple_ref_leaf, dbg_value, 0);
+      struct expression* simple_ref_leaf = init_expr(p, dbg_value, ATOM_VALUE);
       
-      /* We dont push the reference variable in the stack since its a leaf node, nothing to visit further */
+      /* leafs store in their private data the depth which will be used when printing the full expression tree */
+      if(p->kind == ASSIGNMENT)
+        simple_ref_leaf->data.av_data.depth = 1;
+      else /* parent is an expansion, parents cannot be ATOM VALUES since they are not put into the stack (they do not have children) */
+        simple_ref_leaf->data.av_data.depth = p->data.exp_data.depth + 1;
+      
+      /* Intermediary pedantic value is the same as the final value */
+      build_pedantic_value(simple_ref_leaf, dbg_value, strlen(dbg_value));
+      
+      /* We dont push the reference variable in the stack since its a leaf node, no children to visit further */
+
+      /* reference_variable() is called from the variable_expand_string() 
+      so maybe we can append this reference to the parent expression */
+      build_pedantic_value(p, dbg_value, strlen(dbg_value));
+
     }
 
     value = v->value;
   }
   
+  if(makefile_eval_peda && peek_dbg_expr()->kind == EXPANSION){
+      build_pedantic_value(peek_dbg_expr(), value, strlen(value));
+  }
 
   o = variable_buffer_output (o, value, strlen (value));
 
@@ -219,6 +237,9 @@ variable_expand_string (char *line, const char *string, size_t length)
   char *save;
   char *o;
   size_t line_offset;
+  size_t normal_chars_substr_len;
+  char open_substr[3];
+  char close_substr[2];
 
   if (!line)
     line = initialize_variable_output ();
@@ -237,11 +258,44 @@ variable_expand_string (char *line, const char *string, size_t length)
   save = length == SIZE_MAX ? xstrdup (string) : xstrndup (string, length);
   p = save;
   
-  if(b_debugger_pedantic){
+  bool at_least_one_dollar = false;
+
+  if(makefile_eval_peda){
     char* dbg_name = strdup(string);
+    
+    struct expression* parent = peek_dbg_expr();
+
+    /* 
+    All nodes of kinds EXPANSION ATOM_VALUE (such as "a") are processed in reference_variable()
+
+    body -> interm_peda_value -> final_value
+
+    ${$(${a})}   -> ${c} -> d
+         $(${a}) -> $(b) -> c
+           ${a}  -> b    -> b
+    */
+    struct expression* e = init_expr(parent, dbg_name, EXPANSION);
+
+    struct expansion_data info;
+    info.interm_peda_len = 0;
+    info.interm_peda_value = NULL;
+    info.final_value_len = 0;
+    info.final_value = NULL;
+
+   
+    /* expansions store in their private data the depth which will be used when printing the full expression tree */
+    if(parent->kind == ASSIGNMENT)
+      info.depth = 1;
+    else /*we are 2 or more levels down the expansion tree so the parent is also an expansion */
+      info.depth = parent->data.exp_data.depth + 1;
+      
+    /* the intermediary pedantic value will be computed in the while loop
+      the final value will be at the end of the loop */
+    e->data.exp_data = info;
 
     /* create a new expression and link it with the current one, much like discovering a new neighbor during DFS traversal*/
-    push_dbg_expr(init_expr(peek_expr(), dbg_name));
+    push_dbg_expr(e);
+    
   }
   while (1)
     {
@@ -251,16 +305,42 @@ variable_expand_string (char *line, const char *string, size_t length)
 
       p1 = strchr (p, '$');
       
-      size_t normal_chars_substr_len = p1 != 0 ? (size_t) (p1 - p) : strlen (p) + 1;
+      normal_chars_substr_len = p1 != 0 ? (size_t) (p1 - p) : strlen (p) + 1;
       
-      if(b_debugger_pedantic)
-        build_pedantic_value(peek_expr(), p, normal_chars_substr_len);
+      // puts(p);
+      // if(p1)
+      //   puts(p1);
+      // else
+      //   puts("NULL");
+      // printf("%d\n", normal_chars_substr_len);
+
+      if(makefile_eval_peda){
+        if(p1 != 0 && p1 != p)
+          build_pedantic_value(peek_dbg_expr(), (char*)p, normal_chars_substr_len);
+        else if(p1 == 0)
+          build_pedantic_value(peek_dbg_expr(), (char*)p, normal_chars_substr_len - 1);
+      }
+        
 
       o = variable_buffer_output (o, p, normal_chars_substr_len);
 
-      if (p1 == 0)
+      if (p1 == 0){
+
+        /* the assumption that the current expression is an expansion is wrong (no $ found), it is a atom value
+          fix current expr which is a simple string
+        */
+        if(makefile_eval_peda && at_least_one_dollar == false){
+          struct expression* e = peek_dbg_expr();
+          struct atom_value_data a = {.depth = e->data.exp_data.depth};
+          e->data.av_data = a;
+          e->kind = ATOM_VALUE;
+        }
         break;
+      }
+        
       p = p1 + 1;
+      
+      at_least_one_dollar = true;
 
       /* Dispatch on the char that follows the $.  */
 
@@ -270,8 +350,8 @@ variable_expand_string (char *line, const char *string, size_t length)
         case '\0':
           /* $$ or $ at the end of the string means output one $ to the
              variable output buffer.  */
-          if(b_debugger_pedantic)
-            build_pedantic_value(peek_expr(), p1, 1);
+          if(makefile_eval_peda)
+            build_pedantic_value(peek_dbg_expr(), (char*)p1, 1);
           o = variable_buffer_output (o, p1, 1);
           break;
 
@@ -325,23 +405,23 @@ variable_expand_string (char *line, const char *string, size_t length)
                     beg = abeg;
                     end = strchr (beg, '\0');
                     
-                    if(b_debugger_pedantic){
+                    if(makefile_eval_peda){
 
                       /* Append the expanded result of the string between {}/() as intermediary pedantic value */
                       /* The final result after applying the reference ${}/$() is added to the variable_buffer instead*/
-                      char open_substr[3];
+                      
                       open_substr[0] = '$';
                       open_substr[1] = openparen;
                       open_substr[2] = '\0';
                   
-                      char close_substr[2];
+                      
                       close_substr[0] = closeparen;
                       close_substr[1] = '\0';
 
-                      struct expression* curr_expr = peek_expr();
+                      struct expression* curr_expr = peek_dbg_expr();
 
                       build_pedantic_value(curr_expr, open_substr, 2);
-                      build_pedantic_value(curr_expr, beg, end - beg);
+                      build_pedantic_value(curr_expr, (char*)beg, end - beg);
                       build_pedantic_value(curr_expr, close_substr, 1);
                     }
                   }
@@ -428,10 +508,37 @@ variable_expand_string (char *line, const char *string, size_t length)
                   }
               }
 
-            if (colon == 0)
+            if (colon == 0){
               /* This is an ordinary variable reference.
                  Look up the value of the variable.  */
-                o = reference_variable (o, beg, end - beg);
+                // if(makefile_eval_peda){
+                //   char open_ref[3];
+                //   open_ref[0] = '$';
+                //   open_ref[1] = closeparen == ')' ? '(' : '{';
+                //   open_ref[2] = '\0';
+
+                //   char close_ref[2];
+                //   close_ref[0] = closeparen;
+                //   close_ref[1] = '\0';
+                  
+                //   char* ref_name = (char*)malloc(2 + end - beg + 1 + 1);
+                //   strncat(ref_name, open_ref, 2);
+                //   strncat(ref_name, beg, end - beg);
+                //   strncat(ref_name, close_ref, 1);
+                //   ref_name[2 + end - beg + 1] = '\0';
+                  
+                //   peek_dbg_expr()->data.exp_data.
+                //   // struct expression* multi_char_var_ref = init_expr(peek_dbg_expr(), ref_name, EXPANSION);
+                //   // multi_char_var_ref->data.exp_data.depth = peek_dbg_expr()->data.exp_data.depth + 1;
+                //   // free(ref_name);
+                //   // push_dbg_expr(multi_char_var_ref);
+                // }
+
+                  o = reference_variable (o, beg, end - beg);
+                  // if(makefile_eval_peda)
+                  //   pop_dbg_expr();
+              
+            }
             free (abeg);
           }
           break;
@@ -442,8 +549,16 @@ variable_expand_string (char *line, const char *string, size_t length)
 
           /* A $ followed by a random char is a variable reference:
              $a is equivalent to $(a).  */
+          if(makefile_eval_peda){
+            char ref_name[] = {'$', *p, '\0'};
+            struct expression* one_char_var_ref = init_expr(peek_dbg_expr(), ref_name, EXPANSION);
+            one_char_var_ref->data.exp_data.depth = peek_dbg_expr()->data.exp_data.depth + 1;
+            push_dbg_expr(one_char_var_ref);
+          }
           o = reference_variable (o, p, 1);
-
+          
+          if(makefile_eval_peda)
+            pop_dbg_expr();
           break;
         }
 
@@ -457,8 +572,20 @@ variable_expand_string (char *line, const char *string, size_t length)
 
   variable_buffer_output (o, "", 1);
 
-  if(b_debugger_pedantic)
+  if(makefile_eval_peda){
+
+    if(at_least_one_dollar){
+      struct expression* final_exp = peek_dbg_expr();
+      struct expansion_data info = final_exp->data.exp_data;
+
+      info.final_value = strdup(variable_buffer + line_offset);
+      info.final_value_len = strlen(info.final_value);
+
+      final_exp->data.exp_data = info;
+    }
+
     pop_dbg_expr();
+  }
 
   return (variable_buffer + line_offset);
 }

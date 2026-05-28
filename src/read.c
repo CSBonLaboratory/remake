@@ -16,6 +16,7 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "makeint.h"
 #include "globals.h"
+#include "pedantic.h"
 // debugger include(s)
 #include "cmd.h"
 
@@ -655,6 +656,10 @@ eval (struct ebuffer *ebuf, int set_default)
   prev_target_description = NULL;
   target_description = NULL;
 
+  /* now we can */
+  if(b_debugger_pedantic)
+    makefile_eval_peda = true;
+
   while (1)
     {
       size_t linelen;
@@ -789,7 +794,12 @@ eval (struct ebuffer *ebuf, int set_default)
             v->export = v_export;
           if (vmod.private_v)
             v->private_var = 1;
-
+          
+          if(makefile_eval_peda){
+            struct expression* assign = peek_dbg_expr();
+            assign->data.asig_data = v;
+            enter_peda_debug();
+          }
           /* This line has been dealt with.  */
           continue;
         }

@@ -37,6 +37,7 @@ noinst_HEADERS = \
 	command/help/write.h \
 	file2line.h \
 	subcmd.h
+	pedantic.h
 
 noinst_LIBRARIES = libdebugger.a
 
@@ -88,7 +89,9 @@ libdebugger_a_SOURCES =  \
 	msg.c 	\
 	msg.h \
 	stack.c \
-	stack.h
+	stack.h \
+	pedantic.c \
+	pedantic.h
 
 # FIXME: In order to make "make distcheck" work, we need to include
 # things from the top src directory. In particular this includes

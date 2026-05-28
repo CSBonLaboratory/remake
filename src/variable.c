@@ -24,12 +24,14 @@ this program.  If not, see <http://www.gnu.org/licenses/>.  */
 #include "commands.h"
 #include "variable.h"
 #include "rule.h"
+#include "pedantic.h"
 #include "globals.h"
 #ifdef WINDOWS32
 #include "pathstuff.h"
 #endif
 #include "hash.h"
 #include "main.h"
+#include "cmd.h"
 
 /* Incremented every time we add or remove a global variable.  */
 static unsigned long variable_changenum;
@@ -1247,12 +1249,16 @@ do_variable_definition (const gmk_floc *flocp, const char *varname,
          We have to allocate memory since otherwise it'll clobber the
          variable buffer, and we may still need that if we're looking at a
          target-specific variable.  */
+      
+      /* During pedantic mode, the analysis of the right side part of the assginment is triggered */
       p = alloc_value = allocated_variable_expand (value);
       break;
     case f_shell:
       {
         /* A shell definition "var != value".  Expand value, pass it to
            the shell, and store the result in recursively-expanded var. */
+          
+        /* During pedantic mode, the analysis of the right side part of the assginment is triggered */
         char *q = allocated_variable_expand (value);
         p = alloc_value = shell_result (q);
         free (q);
@@ -1273,6 +1279,11 @@ do_variable_definition (const gmk_floc *flocp, const char *varname,
       /* A recursive variable definition "var = value".
          The value is used verbatim.  */
       p = value;
+
+      /* See what a potential expansion would look like only in pedantic mode */
+      if(makefile_eval_peda){
+        char* future_value = allocated_variable_expand (value);
+      }
       break;
     case f_append:
     case f_append_value:
@@ -1653,11 +1664,14 @@ assign_variable_definition (struct variable *v, const char *line)
   if (!parse_variable_definition (line, v))
     return NULL;
 
-  if(b_debugger_pedantic)
+  if(makefile_eval_peda)
   {
     /* record the whole assignment as an expression, from now on we go through the left side of it */
-    struct expression* current_assignment = init_expr(&root_expr_tree, line);
-
+    struct expression* current_assignment = init_expr(&root_expr_tree, line, ASSIGNMENT);
+    
+    /* we put private data for assignment after parsing the right side so that we have a complete variable */
+    current_assignment->data.asig_data = NULL;
+    
     push_dbg_expr(current_assignment);
   }
   /* Expand the name, so "$(foo)bar = baz" works.  */
@@ -1696,10 +1710,11 @@ try_variable_definition (const gmk_floc *flocp, const char *line,
     v.fileinfo = *flocp;
   else
     v.fileinfo.filenm = 0;
-
+  /* Left side of assignment */
   if (!assign_variable_definition (&v, line))
     return 0;
 
+    /* Right side of assignment */
   vp = do_variable_definition (flocp, v.name, v.value,
                                origin, v.flavor, target_var);
 
