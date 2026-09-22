@@ -123,12 +123,12 @@ unsigned int debugger_enabled;
 bool b_debugger_preread = false;
 
 /* If true, enter the debugger at every variable assignment, variable definition and conditional structure*/
-bool b_debugger_pedantic = false;
+bool b_debugger_expansion = false;
 
 /* Flag triggered when the pedantic phase of debugger is active and remake reads the makefile line by line
    Used to only analyze variables during this phase since there are also built-in variables expands that might interfere with pedantic logic
 */
-bool makefile_eval_peda = false;
+bool makefile_eval_expand = false;
 
 /* This character introduces a command: it's the first char on the line.  */
 char cmd_prefix = '\t';

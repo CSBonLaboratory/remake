@@ -100,10 +100,10 @@ extern bool b_debugger_preread;
 /* Flag triggered when the pedantic phase of debugger is active and remake reads the makefile line by line
    Used to only analyze variables during this phase since there are also built-in variables expands that might interfere with pedantic logic
 */
-extern bool makefile_eval_peda;
+extern bool makefile_eval_expand;
 
 /* If true, enter the debugger at every variable assignment, variable definition and conditional structure*/
-extern bool b_debugger_pedantic;
+extern bool b_debugger_expansion;
 
 /* Remember the original value of the SHELL variable, from the environment.  */
 extern struct variable shell_var;

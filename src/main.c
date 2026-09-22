@@ -1464,7 +1464,7 @@ main (int argc, const char **argv, char **envp)
         }
 
         if(0 == strcmp(*p, "pedantic")){
-          b_debugger_pedantic = true;
+          b_debugger_expansion = true;
           init_pedantic();
           db_level = DB_ALL;
           i_debugger_stepping  =  1;

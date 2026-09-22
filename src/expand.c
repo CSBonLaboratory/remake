@@ -159,12 +159,30 @@ recursively_expand_for_file (struct variable *v, struct file *file)
 __inline
 #endif
 static char *
-reference_variable (char *o, const char *name, size_t length)
+reference_variable (
+  char *o,
+  const char *name, 
+  size_t length, 
+  expr_t reference_kind
+)
 {
   struct variable *v;
   char *value;
+  char *whole_ref;
+  int ref_length;
+  struct expandable_data* info;
+  struct expression* either_manual_subscope_ref_or_auto;
+  struct expression* subscope_ref = NULL;
 
   v = lookup_variable (name, length);
+  /*
+  `end` is close delimiter if the enclosing substring does not require any expansion
+  `end` is null char otherwise
+   end - beg = length means that char at `end` position is not considered during reference_variable
+   beg = name
+   end = name + length
+   name is either a single char or all chars between open and close delimiters without them
+  */
 
   if (v == 0)
     warn_undefined (name, length);
@@ -173,43 +191,114 @@ reference_variable (char *o, const char *name, size_t length)
   if (v == 0 || (*v->value == '\0' && !v->append))
     return o;
 
-  struct expression* p = peek_dbg_expr();
+  if(makefile_eval_expand){
+
+    switch(reference_kind)
+    {
+      case SIMPLE_REFERENCE:
+        whole_ref = (char*)malloc(1 + 1 + 1);
+        whole_ref[0] = '$';
+        whole_ref[1] = name[0];
+        whole_ref[2] = '\0';
+        ref_length = 2;
+        break;
+
+      default:
+        whole_ref = (char*)malloc(2 + length + 1 + 1);
+        memset(whole_ref, 0, 2 + length + 1 + 1);
+        whole_ref[0] = '$';
+        strncpy(whole_ref + 2, name, length);
+        whole_ref[2 + length + 1] = '\0';
+
+        if(reference_kind == BRACE_REFERENCE){
+          whole_ref[1] = '{';
+          whole_ref[2 + length] = '}';
+        }
+        else if(reference_kind == PAREN_REFERENCE)
+        {
+          whole_ref[1] = '(';
+          whole_ref[2 + length] = ')';
+        }
+
+        ref_length = 2 + length + 1;
+        break;
+    }
+
+  }
+
+  if(makefile_eval_expand){
+
+    /* reference_variable() is called to solve the final value of
+      a multi reference after its nested expression has been previously expanded
+    */
+    struct expression* unknown_current = peek_dbg_expr();
+
+    /* reference_variable() was called for a reference inside the original expanded string */
+    if(unknown_current->scope == AUTOMATIC_SCOPE && unknown_current->kind != MULTI_REFERENCE){
+      if(!is_automatic_scope_ref(whole_ref, ref_length)){
+        subscope_ref = push_manual_subscope_reference(whole_ref, ref_length, reference_kind, VERTICAL_REF);
+        free(whole_ref);
+      }
+      else /* the whole expanded string is a reference */
+        set_real_kind_automatic_scope(reference_kind);
+    } /* $($a) but a = b then create an intermediary node $b */
+    else if(unknown_current->kind == MULTI_REFERENCE){
+      subscope_ref = push_manual_subscope_reference(whole_ref, ref_length, reference_kind, HORIZONTAL_REF);
+    }
+    else{
+      printf("Unkown way to deal with ref: %s for current expression %s of kind %s and scope %s", \
+        name, \
+        unknown_current->body, \
+        to_string_kind(unknown_current->kind),
+        to_string_scope(unknown_current->scope)\
+      );
+      exit(1);
+    }
+    /* 
+    otherwise reference_variable() is called to solve the expanded inner substring
+    of a multi reference that is not in automatic scope
+    */
+    
+    either_manual_subscope_ref_or_auto = peek_dbg_expr();
+  }
+    
 
   if(v->recursive){
-    /* if pedantic mode activated, the recursively_expand() will go to a variable_expand_string() that will mean a new node in DFS traversal*/
+    /* if pedantic mode activated, the recursively_expand() will go to a variable_expand_string() 
+    that will mean a new node in DFS traversal */
     value = recursively_expand(v);
   }
   else{
-    if(makefile_eval_peda){
+    if(makefile_eval_expand){
 
       char* dbg_value = strdup(v->value);
 
-      /* Link this simple reference with the current expr */
-      
-      struct expression* simple_ref_leaf = init_expr(p, dbg_value, ATOM_VALUE);
-      
-      /* leafs store in their private data the depth which will be used when printing the full expression tree */
-      if(p->kind == ASSIGNMENT)
-        simple_ref_leaf->data.av_data.depth = 1;
-      else /* parent is an expansion, parents cannot be ATOM VALUES since they are not put into the stack (they do not have children) */
-        simple_ref_leaf->data.av_data.depth = p->data.exp_data.depth + 1;
-      
-      /* Intermediary pedantic value is the same as the final value */
-      build_pedantic_value(simple_ref_leaf, dbg_value, strlen(dbg_value));
-      
+      /* Link final value with the current expression but dont push it on stakc since this is a leaf in the tree */
+      struct expression* simple_ref_leaf_val = horizontal_next_step_init_expr(
+        either_manual_subscope_ref_or_auto, \
+        dbg_value, \
+        ATOM_VALUE \
+      );
+
+      info = (struct expandable_data*)malloc(sizeof(struct expandable_data));
+
+      if(either_manual_subscope_ref_or_auto->kind == ASSIGNMENT)
+        info->order = 1;
+      else 
+        info->order = either_manual_subscope_ref_or_auto->data.exp_data->order + 1;
+
+      simple_ref_leaf_val->data.exp_data = info;
       /* We dont push the reference variable in the stack since its a leaf node, no children to visit further */
-
-      /* reference_variable() is called from the variable_expand_string() 
-      so maybe we can append this reference to the parent expression */
-      build_pedantic_value(p, dbg_value, strlen(dbg_value));
-
     }
 
     value = v->value;
   }
   
-  if(makefile_eval_peda && peek_dbg_expr()->kind == EXPANSION){
-      build_pedantic_value(peek_dbg_expr(), value, strlen(value));
+  if(makefile_eval_expand){
+    if(subscope_ref){
+      pop_subscope_reference(reference_kind);
+    }
+    
   }
 
   o = variable_buffer_output (o, value, strlen (value));
@@ -232,14 +321,64 @@ reference_variable (char *o, const char *name, size_t length)
 char *
 variable_expand_string (char *line, const char *string, size_t length)
 {
+  /*
+  
+  Normally, this function deals with the logic of expanding and referencing variables:
+  
+  - start from the beginging of string
+
+  while(1){
+    1. find first dolar (call it outer dolar, append "normal characters between current position and outer dollar
+    in the result string")
+
+    2. find closing delimiter and if not reference case $a
+
+    3. if there is any dolar between outer dolar and closind delimiter 
+    then recursively call this function with the substring
+
+    4. result from recursive call is referenced
+
+    5. if not 3 then no inner dolar so reference case ${a}
+
+    6. move curent cursor past the closing delimiter or past variable name referenced at step 
+  }
+
+  Capturing all parsing and expansion phases respect a DFS algo.
+
+  Let `scope` be a procedure context for variable_expand_string(). 
+  In this scope we define as current visited expression (as in DFS search) the `string` parameter.
+  Its children (or neighboring nodes) will be any substring that represents a reference or
+  a multi-expansion (the outer dolar substring that encapsulates another 1 or more inner dolars).
+  
+  A `subscope` is an element within a `scope` in which there are created and pushed in the soon-to-visit stack
+  the reference substring and/or multi-expansion substring.
+
+  We can define a 3-way parallel here:
+  - `subscope` is within a `scope`
+  - the `subscope` deals with a substring of the `scope's` string
+  - the expression created and pushed to the stack in the `subscope` is a child of the expression in the `scope`
+
+  The reference_variable() function can also recursively call this function if the string is not immediatelly expandable,
+  otherwise create a leaf node that is not put in the stack.
+
+  The parsing can be represented by a pseudo context-free grammar as:
+
+  input = scope (the current expression node - top of the stack has the name of the input)
+
+  scope = <start input>?(<normal chars>${subscope})*<end input>
+
+  subscope = scope (to abstract a recursive call triggered by `reference variable()` or `expand_argument()` )
+
+  */
   struct variable *v;
-  const char *p, *p1;
+  const char *p, *p1, *outer_dolar;
   char *save;
   char *o;
   size_t line_offset;
   size_t normal_chars_substr_len;
   char open_substr[3];
   char close_substr[2];
+  bool at_least_one_ref = false;
 
   if (!line)
     line = initialize_variable_output ();
@@ -257,46 +396,11 @@ variable_expand_string (char *line, const char *string, size_t length)
      for example).  Also having a nil-terminated string is handy.  */
   save = length == SIZE_MAX ? xstrdup (string) : xstrndup (string, length);
   p = save;
+
+  if(makefile_eval_expand)
+    push_automatic_scope(string, EITHER_MIXED_ATOM_VALUE_UNKNOWN_REF);
+
   
-  bool at_least_one_dollar = false;
-
-  if(makefile_eval_peda){
-    char* dbg_name = strdup(string);
-    
-    struct expression* parent = peek_dbg_expr();
-
-    /* 
-    All nodes of kinds EXPANSION ATOM_VALUE (such as "a") are processed in reference_variable()
-
-    body -> interm_peda_value -> final_value
-
-    ${$(${a})}   -> ${c} -> d
-         $(${a}) -> $(b) -> c
-           ${a}  -> b    -> b
-    */
-    struct expression* e = init_expr(parent, dbg_name, EXPANSION);
-
-    struct expansion_data info;
-    info.interm_peda_len = 0;
-    info.interm_peda_value = NULL;
-    info.final_value_len = 0;
-    info.final_value = NULL;
-
-   
-    /* expansions store in their private data the depth which will be used when printing the full expression tree */
-    if(parent->kind == ASSIGNMENT)
-      info.depth = 1;
-    else /*we are 2 or more levels down the expansion tree so the parent is also an expansion */
-      info.depth = parent->data.exp_data.depth + 1;
-      
-    /* the intermediary pedantic value will be computed in the while loop
-      the final value will be at the end of the loop */
-    e->data.exp_data = info;
-
-    /* create a new expression and link it with the current one, much like discovering a new neighbor during DFS traversal*/
-    push_dbg_expr(e);
-    
-  }
   while (1)
     {
       /* Copy all following uninteresting chars all at once to the
@@ -304,54 +408,52 @@ variable_expand_string (char *line, const char *string, size_t length)
          at the next $ or the end of the input.  */
 
       p1 = strchr (p, '$');
+      outer_dolar = p1;
       
       normal_chars_substr_len = p1 != 0 ? (size_t) (p1 - p) : strlen (p) + 1;
       
-      // puts(p);
-      // if(p1)
-      //   puts(p1);
-      // else
-      //   puts("NULL");
-      // printf("%d\n", normal_chars_substr_len);
-
-      if(makefile_eval_peda){
-        if(p1 != 0 && p1 != p)
-          build_pedantic_value(peek_dbg_expr(), (char*)p, normal_chars_substr_len);
-        else if(p1 == 0)
-          build_pedantic_value(peek_dbg_expr(), (char*)p, normal_chars_substr_len - 1);
-      }
-        
-
       o = variable_buffer_output (o, p, normal_chars_substr_len);
 
-      if (p1 == 0){
+      if(makefile_eval_expand){
 
-        /* the assumption that the current expression is an expansion is wrong (no $ found), it is a atom value
-          fix current expr which is a simple string
-        */
-        if(makefile_eval_peda && at_least_one_dollar == false){
-          struct expression* e = peek_dbg_expr();
-          struct atom_value_data a = {.depth = e->data.exp_data.depth};
-          e->data.av_data = a;
-          e->kind = ATOM_VALUE;
+        // a previous iteration found a ref
+        if(at_least_one_ref){
+
+          struct expression* current = peek_automatic_scope();
+
+          /* the whole string is some type of reference, do not poison the type with MIXED */
+          if(current->kind != SIMPLE_REFERENCE && \
+          current->kind != PAREN_REFERENCE && \
+          current->kind != BRACE_REFERENCE && \
+          current->kind != MULTI_REFERENCE)
+            set_real_kind_automatic_scope(MIXED);
         }
-        break;
-      }
+        // none of the previous iterations found a simple/multi ref and no $ in the remaining substring
+        else if(p1 == 0){ 
+          // automatic_scope_peda_val(p, normal_chars_substr_len - 1);
+          set_real_kind_automatic_scope(ATOM_VALUE);
+        }
+        /* this iteration has found either a simple/multi ref or a $$ so its still either mixed or atom value or ref 
+           append the characters from the begining until the first found $
+        */
+        // if(p1 != 0 && p1 != p) 
+        //   automatic_scope_peda_val(p, normal_chars_substr_len);
         
+      }
+
+      if (p1 == 0)
+        break;
+      
       p = p1 + 1;
       
-      at_least_one_dollar = true;
-
       /* Dispatch on the char that follows the $.  */
 
       switch (*p)
-        {
+      {
         case '$':
         case '\0':
           /* $$ or $ at the end of the string means output one $ to the
              variable output buffer.  */
-          if(makefile_eval_peda)
-            build_pedantic_value(peek_dbg_expr(), (char*)p1, 1);
           o = variable_buffer_output (o, p1, 1);
           break;
 
@@ -365,7 +467,19 @@ variable_expand_string (char *line, const char *string, size_t length)
             const char *beg = p + 1;
             char *op;
             char *abeg = NULL;
+            char* inner_dolar;
             const char *end, *colon;
+            struct expression* multi_ref = NULL;
+            
+            inner_dolar = (char*)outer_dolar; // we dont know if there truly is a inner (second) dolar
+            at_least_one_ref = true;
+
+            open_substr[0] = '$';
+            open_substr[1] = openparen;
+            open_substr[2] = '\0';
+
+            close_substr[0] = closeparen;
+            close_substr[1] = '\0';
 
             op = o;
             begp = p;
@@ -387,8 +501,16 @@ variable_expand_string (char *line, const char *string, size_t length)
             if (p1 != 0)
               {
                 /* BEG now points past the opening paren or brace.
-                   Count parens or braces until it is matched.  */
+                   Count parens or braces until it is matched.
+
+                   BEGP points to the opening paren or brace
+                   
+                   p will point to the correct closing paren or brace after this 'for'
+
+                   p1 points to the first $ starting from beg (p1 can also be begp which is interesting case)
+                */
                 int count = 0;
+                inner_dolar = (char*)p1;
                 for (p = beg; *p != '\0'; ++p)
                   {
                     if (*p == openparen)
@@ -401,29 +523,19 @@ variable_expand_string (char *line, const char *string, size_t length)
                    such as '$($(a)'.  */
                 if (count < 0)
                   {
+                     
+                    if(makefile_eval_expand){
+                      if(!is_automatic_scope_multi_ref(outer_dolar, p)){
+                        multi_ref = push_manual_subscope_multi_reference(outer_dolar, p);
+                      }
+                      else
+                        set_real_kind_automatic_scope(MULTI_REFERENCE);
+                    }
+
                     abeg = expand_argument (beg, p); /* Expand the name.  */
                     beg = abeg;
                     end = strchr (beg, '\0');
                     
-                    if(makefile_eval_peda){
-
-                      /* Append the expanded result of the string between {}/() as intermediary pedantic value */
-                      /* The final result after applying the reference ${}/$() is added to the variable_buffer instead*/
-                      
-                      open_substr[0] = '$';
-                      open_substr[1] = openparen;
-                      open_substr[2] = '\0';
-                  
-                      
-                      close_substr[0] = closeparen;
-                      close_substr[1] = '\0';
-
-                      struct expression* curr_expr = peek_dbg_expr();
-
-                      build_pedantic_value(curr_expr, open_substr, 2);
-                      build_pedantic_value(curr_expr, (char*)beg, end - beg);
-                      build_pedantic_value(curr_expr, close_substr, 1);
-                    }
                   }
               }
             else
@@ -508,37 +620,21 @@ variable_expand_string (char *line, const char *string, size_t length)
                   }
               }
 
-            if (colon == 0){
+            if (colon == 0)
               /* This is an ordinary variable reference.
-                 Look up the value of the variable.  */
-                // if(makefile_eval_peda){
-                //   char open_ref[3];
-                //   open_ref[0] = '$';
-                //   open_ref[1] = closeparen == ')' ? '(' : '{';
-                //   open_ref[2] = '\0';
-
-                //   char close_ref[2];
-                //   close_ref[0] = closeparen;
-                //   close_ref[1] = '\0';
-                  
-                //   char* ref_name = (char*)malloc(2 + end - beg + 1 + 1);
-                //   strncat(ref_name, open_ref, 2);
-                //   strncat(ref_name, beg, end - beg);
-                //   strncat(ref_name, close_ref, 1);
-                //   ref_name[2 + end - beg + 1] = '\0';
-                  
-                //   peek_dbg_expr()->data.exp_data.
-                //   // struct expression* multi_char_var_ref = init_expr(peek_dbg_expr(), ref_name, EXPANSION);
-                //   // multi_char_var_ref->data.exp_data.depth = peek_dbg_expr()->data.exp_data.depth + 1;
-                //   // free(ref_name);
-                //   // push_dbg_expr(multi_char_var_ref);
-                // }
-
-                  o = reference_variable (o, beg, end - beg);
-                  // if(makefile_eval_peda)
-                  //   pop_dbg_expr();
+                 Look up the value of the variable.
+                `end` is close delimiter if the enclosing substring does not require any expansion
+                `end` is null char otherwise
+                end - beg means that char at `end` position is not considered during reference_variable
+              */
               
+              o = reference_variable (o, beg, end - beg, (openparen == '(') ? PAREN_REFERENCE : BRACE_REFERENCE);
+
+            if(makefile_eval_expand){
+              if(multi_ref)
+                pop_subscope_multi_expansion();
             }
+                           
             free (abeg);
           }
           break;
@@ -546,45 +642,44 @@ variable_expand_string (char *line, const char *string, size_t length)
         default:
           if (ISSPACE (p[-1]))
             break;
-
+          
           /* A $ followed by a random char is a variable reference:
              $a is equivalent to $(a).  */
-          if(makefile_eval_peda){
-            char ref_name[] = {'$', *p, '\0'};
-            struct expression* one_char_var_ref = init_expr(peek_dbg_expr(), ref_name, EXPANSION);
-            one_char_var_ref->data.exp_data.depth = peek_dbg_expr()->data.exp_data.depth + 1;
-            push_dbg_expr(one_char_var_ref);
-          }
-          o = reference_variable (o, p, 1);
-          
-          if(makefile_eval_peda)
-            pop_dbg_expr();
-          break;
-        }
+          o = reference_variable (o, p, 1, SIMPLE_REFERENCE);
 
-      if (*p == '\0')
+          at_least_one_ref = true;
+
+          break;
+      }
+
+      if (*p == '\0'){
+        if(makefile_eval_expand){
+          struct expression* final_scope = peek_automatic_scope();
+          if(final_scope->kind == EITHER_MIXED_ATOM_VALUE_UNKNOWN_REF)
+            final_scope->kind = ATOM_VALUE;
+        }
         break;
+      }
 
       ++p;
+      
     }
 
   free (save);
 
   variable_buffer_output (o, "", 1);
 
-  if(makefile_eval_peda){
+  if(makefile_eval_expand){
+    struct expression* final_auto = peek_automatic_scope();
 
-    if(at_least_one_dollar){
-      struct expression* final_exp = peek_dbg_expr();
-      struct expansion_data info = final_exp->data.exp_data;
+    /* generate the final value of the current node after all recursive expansions
+    but do a simple string does not have a final value since there were no expansions
+    so it is unnecessary to generate another node
+     */
+    if(final_auto->kind == MIXED)
+      horizontal_next_step_init_expr(final_auto, variable_buffer + line_offset, ATOM_VALUE);
 
-      info.final_value = strdup(variable_buffer + line_offset);
-      info.final_value_len = strlen(info.final_value);
-
-      final_exp->data.exp_data = info;
-    }
-
-    pop_dbg_expr();
+    pop_automatic_scope_either_mixed_atom_value_unknown_ref();
   }
 
   return (variable_buffer + line_offset);

@@ -2315,6 +2315,10 @@ handle_function (char **op, const char **stringp)
   /* Get some memory to store the arg pointers.  */
   argvp = argv = alloca (sizeof (char *) * (nargs + 2));
 
+  if(makefile_eval_expand){
+
+  }
+
   /* Chop the string into arguments, then a nul.  As soon as we hit
      MAXIMUM_ARGS (if it's >0) assume the rest of the string is part of the
      last argument.

@@ -1269,8 +1269,14 @@ do_variable_definition (const gmk_floc *flocp, const char *varname,
       /* A conditional variable definition "var ?= value".
          The value is set IFF the variable is not defined yet. */
       v = lookup_variable (varname, strlen (varname));
-      if (v)
+
+      /* See what a potential expansion would look like only in pedantic mode */
+      if (v){
+        if(makefile_eval_expand){
+          char* future_value = allocated_variable_expand (value);
+        }
         goto done;
+      }
 
       conditional = 1;
       flavor = f_recursive;
@@ -1281,7 +1287,7 @@ do_variable_definition (const gmk_floc *flocp, const char *varname,
       p = value;
 
       /* See what a potential expansion would look like only in pedantic mode */
-      if(makefile_eval_peda){
+      if(makefile_eval_expand){
         char* future_value = allocated_variable_expand (value);
       }
       break;
@@ -1310,6 +1316,10 @@ do_variable_definition (const gmk_floc *flocp, const char *varname,
                This becomes a normal recursive definition.  */
             p = value;
             flavor = f_recursive;
+            /* See what a potential expansion would look like only in pedantic mode */
+            if(makefile_eval_expand){
+              char* future_value = allocated_variable_expand (value);
+            }
           }
         else
           {
@@ -1351,6 +1361,9 @@ do_variable_definition (const gmk_floc *flocp, const char *varname,
               }
 
             memcpy (&alloc_value[oldlen], val, vallen + 1);
+            if(makefile_eval_expand){
+              char* future_value = allocated_variable_expand (alloc_value);
+            }
 
             free (tp);
           }
@@ -1664,10 +1677,10 @@ assign_variable_definition (struct variable *v, const char *line)
   if (!parse_variable_definition (line, v))
     return NULL;
 
-  if(makefile_eval_peda)
+  if(makefile_eval_expand)
   {
     /* record the whole assignment as an expression, from now on we go through the left side of it */
-    struct expression* current_assignment = init_expr(&root_expr_tree, line, ASSIGNMENT);
+    struct expression* current_assignment = vertical_child_init_expr(&root_expr_tree, line, ASSIGNMENT);
     
     /* we put private data for assignment after parsing the right side so that we have a complete variable */
     current_assignment->data.asig_data = NULL;

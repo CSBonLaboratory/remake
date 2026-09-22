@@ -656,9 +656,8 @@ eval (struct ebuffer *ebuf, int set_default)
   prev_target_description = NULL;
   target_description = NULL;
 
-  /* now we can */
-  if(b_debugger_pedantic)
-    makefile_eval_peda = true;
+  if(b_debugger_expansion)
+    makefile_eval_expand = true;
 
   while (1)
     {
@@ -795,7 +794,7 @@ eval (struct ebuffer *ebuf, int set_default)
           if (vmod.private_v)
             v->private_var = 1;
           
-          if(makefile_eval_peda){
+          if(makefile_eval_expand){
             struct expression* assign = peek_dbg_expr();
             assign->data.asig_data = v;
             enter_peda_debug();
